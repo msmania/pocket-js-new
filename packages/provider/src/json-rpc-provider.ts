@@ -78,7 +78,7 @@ export class JsonRpcProvider implements AbstractProvider {
     this.logger = debug('JsonRpcProvider')
   }
 
-  private async perform({
+  private async performAndMeasure({
     route,
     body,
     rpcUrl,
@@ -92,11 +92,11 @@ export class JsonRpcProvider implements AbstractProvider {
     timeout?: number
     retryAttempts?: number
     retriesPerformed?: number
-  }): Promise<Response> {
-    const startTime = process.hrtime()
+  }): Promise<[Response, BigInt]> {
+    const startTime = process.hrtime.bigint()
     const shouldRetryOnFailure = retriesPerformed < retryAttempts
     const performRetry = () =>
-      this.perform({
+      this.performAndMeasure({
         route,
         body,
         rpcUrl,
@@ -132,6 +132,15 @@ export class JsonRpcProvider implements AbstractProvider {
       signal: controller.signal as AbortSignal,
       headers: headers,
       body: JSON.stringify(body),
+    }).then(response => {
+      const endTime = process.hrtime.bigint()
+      const totalTime = endTime - startTime
+      debug(
+        `${routedRpcUrl} (attempt ${
+          retriesPerformed + 1
+        }) CALL DURATION: ${totalTime}`
+      )
+      return [response, totalTime] as [Response, BigInt]
     }).catch((error) => {
       debug(`${routedRpcUrl} attempt ${retriesPerformed + 1} failure`)
       if (shouldRetryOnFailure) {
@@ -142,18 +151,37 @@ export class JsonRpcProvider implements AbstractProvider {
       }
     })
 
-    const totalTime = process.hrtime(startTime)
-    debug(
-      `${routedRpcUrl} (attempt ${
-        retriesPerformed + 1
-      }) CALL DURATION: ${totalTime}`
-    )
-
     // Fetch can fail by either throwing due to a network error or responding with
     // ok === false on 40x/50x so both situations be explicitly handled separately.
-    return !rpcResponse.ok && shouldRetryOnFailure
+    return !rpcResponse[0].ok && shouldRetryOnFailure
       ? performRetry()
       : rpcResponse
+  }
+
+  private async perform({
+    route,
+    body,
+    rpcUrl,
+    timeout = DEFAULT_TIMEOUT,
+    retryAttempts = 0,
+    retriesPerformed = 0,
+  }: {
+    route: V1RpcRoutes
+    body: any
+    rpcUrl?: string
+    timeout?: number
+    retryAttempts?: number
+    retriesPerformed?: number
+  }): Promise<Response> {
+    const [relay, _] = await this.performAndMeasure({
+      route,
+      body,
+      rpcUrl,
+      timeout,
+      retryAttempts,
+      retriesPerformed,
+    });
+    return relay;
   }
 
   /**
@@ -729,7 +757,7 @@ export class JsonRpcProvider implements AbstractProvider {
    * @param {number} options.retryAttempts - The number of retries to perform if the first call fails.
    * @param {boolean} options.rejectSelfSignedCertificates - Option to reject self signed certificates or not.
    * @param {timeout} options.timeout - Timeout before the call fails. In milliseconds.
-   * @returns {any} - A relay response.
+   * @returns {[any, BigInt]} - A relay response and the elapsed time in NSec
    * * */
   async relay(
     request,
@@ -742,9 +770,9 @@ export class JsonRpcProvider implements AbstractProvider {
       retryAttempts: 0,
       rejectSelfSignedCertificates: false,
     }
-  ): Promise<unknown> {
+  ): Promise<[unknown, BigInt]> {
     try {
-      const relayAttempt = await this.perform({
+      const [relayAttempt, totelTimeInNSec] = await this.performAndMeasure({
         route: V1RpcRoutes.ClientRelay,
         body: request,
         rpcUrl,
@@ -754,7 +782,7 @@ export class JsonRpcProvider implements AbstractProvider {
       const relayResponse = await relayAttempt.json()
       this.logger(JSON.stringify(relayResponse))
 
-      return relayResponse
+      return [relayResponse, totelTimeInNSec]
     } catch (err: any) {
       this.logger(
         `ERROR: ${JSON.stringify(err, Object.getOwnPropertyNames(err))}`

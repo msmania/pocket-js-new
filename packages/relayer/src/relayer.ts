@@ -185,7 +185,7 @@ export class Relayer implements AbstractRelayer {
     const totalTime = process.hrtime(startTime)
     logger(`Relay data structure generated, TOOK ${totalTime}`)
 
-    const relay = await provider.relay(
+    const [relay, elapsedInNSec] = await provider.relay(
       relayRequest,
       serviceNode.serviceUrl.toString(),
       options
@@ -210,6 +210,7 @@ export class Relayer implements AbstractRelayer {
         requestHash: this.hashRequest(requestHash),
       },
       serviceNode,
+      elapsedInNSec,
     }
   }
 
